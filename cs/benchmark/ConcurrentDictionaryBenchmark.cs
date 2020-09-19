@@ -60,11 +60,10 @@ namespace FASTER.benchmark
         Input[] input_;
         Input* input_ptr;
 
-        ConcurrentDictionary<Key, Value> store;
+        readonly ConcurrentDictionary<Key, Value> store;
 
         long total_ops_done = 0;
 
-        const string kKeyWorkload = "a";
         readonly int threadCount;
         readonly int numaStyle;
         readonly string distribution;
@@ -112,7 +111,7 @@ namespace FASTER.benchmark
             Stopwatch sw = new Stopwatch();
             sw.Start();
 
-            Value value = default(Value);
+            Value value = default;
             long reads_done = 0;
             long writes_done = 0;
 
@@ -306,7 +305,7 @@ namespace FASTER.benchmark
             int count = 0;
 #endif
 
-            Value value = default(Value);
+            Value value = default;
 
             for (long chunk_idx = Interlocked.Add(ref idx_, kChunkSize) - kChunkSize;
                 chunk_idx < kInitCount;

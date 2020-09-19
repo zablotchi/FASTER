@@ -4,7 +4,6 @@
 #pragma warning disable 1591
 
 using System;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace FASTER.core
@@ -43,7 +42,7 @@ namespace FASTER.core
 
         public long Size
         {
-            get
+            readonly get
             {
                 int multiplier = (int)((((long)word & kMultiplierMaskInWord) >> (kAddressBits + kSizeBits)) & kMultiplierMaskInInteger);
                 return (multiplier == 0 ? 512 : 1<<20)*((((long)word & kSizeMaskInWord) >> kAddressBits) & kSizeMaskInInteger);
@@ -61,7 +60,7 @@ namespace FASTER.core
                     multiplier = 1;
                     if (val >= (1 << kSizeBits))
                     {
-                        throw new Exception("Unsupported object size: " + value);
+                        throw new FasterException("Unsupported object size: " + value);
                     }
                 }
                 var _word = (long)word;
@@ -75,7 +74,7 @@ namespace FASTER.core
 
         public long Address
         {
-            get
+            readonly get
             {
                 return (long)word & kAddressMask;
             }
@@ -87,7 +86,7 @@ namespace FASTER.core
                 word = (IntPtr)_word;
                 if (value != Address)
                 {
-                    throw new Exception("Overflow in AddressInfo" + ((kAddressBits < 64) ? " - consider running the program in x64 mode for larger address space support" : ""));
+                    throw new FasterException("Overflow in AddressInfo" + ((kAddressBits < 64) ? " - consider running the program in x64 mode for larger address space support" : ""));
                 }
             }
         }

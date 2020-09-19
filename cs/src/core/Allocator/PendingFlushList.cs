@@ -1,7 +1,6 @@
 ﻿// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
-using System;
 using System.Threading;
 
 namespace FASTER.core
@@ -33,7 +32,7 @@ namespace FASTER.core
                     }
                 }
             } while (retries++ < maxRetries);
-            throw new Exception("Unable to add item to list");
+            throw new FasterException("Unable to add item to list");
         }
 
         public bool RemoveAdjacent(long address, out PageAsyncFlushResult<Empty> request)

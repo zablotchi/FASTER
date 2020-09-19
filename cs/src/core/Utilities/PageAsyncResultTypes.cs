@@ -12,14 +12,15 @@ namespace FASTER.core
     /// Result of async page read
     /// </summary>
     /// <typeparam name="TContext"></typeparam>
-    public class PageAsyncReadResult<TContext> : IAsyncResult
+    public sealed class PageAsyncReadResult<TContext>
     {
         internal long page;
+        internal long offset;
         internal TContext context;
         internal CountdownEvent handle;
         internal SectorAlignedMemory freeBuffer1;
         internal SectorAlignedMemory freeBuffer2;
-        internal IOCompletionCallback callback;
+        internal DeviceIOCompletionCallback callback;
         internal IDevice objlogDevice;
         internal object frame;
         internal CancellationTokenSource cts;
@@ -28,26 +29,6 @@ namespace FASTER.core
         internal long resumePtr;
         internal long untilPtr;
         internal long maxPtr;
-
-        /// <summary>
-        /// 
-        /// </summary>
-        public bool IsCompleted => throw new NotImplementedException();
-
-        /// <summary>
-        /// 
-        /// </summary>
-        public WaitHandle AsyncWaitHandle => throw new NotImplementedException();
-
-        /// <summary>
-        /// 
-        /// </summary>
-        public object AsyncState => throw new NotImplementedException();
-
-        /// <summary>
-        /// 
-        /// </summary>
-        public bool CompletedSynchronously => throw new NotImplementedException();
 
         /// <summary>
         /// Free
@@ -72,7 +53,7 @@ namespace FASTER.core
     /// Page async flush result
     /// </summary>
     /// <typeparam name="TContext"></typeparam>
-    public class PageAsyncFlushResult<TContext> : IAsyncResult
+    public sealed class PageAsyncFlushResult<TContext>
     {
         /// <summary>
         /// Page
@@ -90,31 +71,10 @@ namespace FASTER.core
         internal bool partial;
         internal long fromAddress;
         internal long untilAddress;
-        internal CountdownEvent handle;
-        internal IDevice objlogDevice;
         internal SectorAlignedMemory freeBuffer1;
         internal SectorAlignedMemory freeBuffer2;
         internal AutoResetEvent done;
-
-        /// <summary>
-        /// 
-        /// </summary>
-        public bool IsCompleted => throw new NotImplementedException();
-
-        /// <summary>
-        /// 
-        /// </summary>
-        public WaitHandle AsyncWaitHandle => throw new NotImplementedException();
-
-        /// <summary>
-        /// 
-        /// </summary>
-        public object AsyncState => throw new NotImplementedException();
-
-        /// <summary>
-        /// 
-        /// </summary>
-        public bool CompletedSynchronously => throw new NotImplementedException();
+        internal SemaphoreSlim completedSemaphore;
 
         /// <summary>
         /// Free
@@ -131,10 +91,8 @@ namespace FASTER.core
                 freeBuffer2.Return();
                 freeBuffer2 = null;
             }
-            if (handle != null)
-            {
-                handle.Signal();
-            }
+
+            completedSemaphore?.Release();
         }
     }
 }

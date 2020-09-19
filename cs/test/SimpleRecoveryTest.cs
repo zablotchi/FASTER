@@ -10,101 +10,72 @@ using System.Linq;
 using FASTER.core;
 using System.IO;
 using NUnit.Framework;
+using FASTER.devices;
 
 namespace FASTER.test.recovery.sumstore.simple
 {
 
     [TestFixture]
-    internal class SimpleRecoveryTests
+    public class RecoveryTests
     {
-        private FasterKV<AdId, NumClicks, Input, Output, Empty, SimpleFunctions> fht1;
-        private FasterKV<AdId, NumClicks, Input, Output, Empty, SimpleFunctions> fht2;
+        private FasterKV<AdId, NumClicks> fht1;
+        private FasterKV<AdId, NumClicks> fht2;
         private IDevice log;
+        public const string EMULATED_STORAGE_STRING = "UseDevelopmentStorage=true;";
+        public const string TEST_CONTAINER = "checkpoints4";
 
 
-        [Test]
-        public void SimpleRecoveryTest1()
+        [TestCase(CheckpointType.FoldOver)]
+        [TestCase(CheckpointType.Snapshot)]
+        public void PageBlobSimpleRecoveryTest(CheckpointType checkpointType)
         {
-            log = Devices.CreateLogDevice(TestContext.CurrentContext.TestDirectory + "\\SimpleRecoveryTest1.log", deleteOnClose: true);
-
-            Directory.CreateDirectory(TestContext.CurrentContext.TestDirectory + "\\checkpoints4");
-
-            fht1 = new FasterKV
-                <AdId, NumClicks, Input, Output, Empty, SimpleFunctions>
-                (128, new SimpleFunctions(),
-                logSettings: new LogSettings { LogDevice = log, MutableFraction = 0.1, MemorySizeBits = 29 },
-                checkpointSettings: new CheckpointSettings { CheckpointDir = TestContext.CurrentContext.TestDirectory + "\\checkpoints4", CheckPointType = CheckpointType.Snapshot }
-                );
-
-            fht2 = new FasterKV
-                <AdId, NumClicks, Input, Output, Empty, SimpleFunctions>
-                (128, new SimpleFunctions(),
-                logSettings: new LogSettings { LogDevice = log, MutableFraction = 0.1, MemorySizeBits = 29 },
-                checkpointSettings: new CheckpointSettings { CheckpointDir = TestContext.CurrentContext.TestDirectory + "\\checkpoints4", CheckPointType = CheckpointType.Snapshot }
-                );
-
-
-            int numOps = 5000;
-            var inputArray = new AdId[numOps];
-            for (int i = 0; i < numOps; i++)
+            if ("yes".Equals(Environment.GetEnvironmentVariable("RunAzureTests")))
             {
-                inputArray[i].adId = i;
+                ICheckpointManager checkpointManager = new DeviceLogCommitCheckpointManager(
+                    new AzureStorageNamedDeviceFactory(EMULATED_STORAGE_STRING),
+                    new DefaultCheckpointNamingScheme($"{TEST_CONTAINER}/PageBlobSimpleRecoveryTest"));
+                SimpleRecoveryTest1(checkpointType, checkpointManager);
+                checkpointManager.PurgeAll();
+                checkpointManager.Dispose();
             }
-
-            NumClicks value;
-            Input inputArg = default(Input);
-            Output output = default(Output);
-
-            fht1.StartSession();
-            for (int key = 0; key < numOps; key++)
-            {
-                value.numClicks = key;
-                fht1.Upsert(ref inputArray[key], ref value, Empty.Default, 0);
-            }
-            fht1.TakeFullCheckpoint(out Guid token);
-            fht1.CompleteCheckpoint(true);
-            fht1.StopSession();
-
-            fht2.Recover(token);
-            fht2.StartSession();
-            for (int key = 0; key < numOps; key++)
-            {
-                var status = fht2.Read(ref inputArray[key], ref inputArg, ref output, Empty.Default, 0);
-
-                if (status == Status.PENDING)
-                    fht2.CompletePending(true);
-                else
-                {
-                    Assert.IsTrue(output.value.numClicks == key);
-                }
-            }
-            fht2.StopSession();
-
-            log.Close();
-            fht1.Dispose();
-            fht2.Dispose();
-            new DirectoryInfo(TestContext.CurrentContext.TestDirectory + "\\checkpoints4").Delete(true);
         }
 
-        [Test]
-        public void SimpleRecoveryTest2()
+        [TestCase(CheckpointType.FoldOver)]
+        [TestCase(CheckpointType.Snapshot)]
+        public void LocalDeviceSimpleRecoveryTest(CheckpointType checkpointType)
         {
-            log = Devices.CreateLogDevice(TestContext.CurrentContext.TestDirectory + "\\SimpleRecoveryTest2.log", deleteOnClose: true);
+            ICheckpointManager checkpointManager = new DeviceLogCommitCheckpointManager(
+                new LocalStorageNamedDeviceFactory(),
+                new DefaultCheckpointNamingScheme($"{TEST_CONTAINER}/PageBlobSimpleRecoveryTest"));
+            SimpleRecoveryTest1(checkpointType, checkpointManager);
+            checkpointManager.PurgeAll();
+            checkpointManager.Dispose();
+        }
 
-            Directory.CreateDirectory(TestContext.CurrentContext.TestDirectory + "\\checkpoints5");
+
+        [TestCase(CheckpointType.FoldOver)]
+        [TestCase(CheckpointType.Snapshot)]
+        public void SimpleRecoveryTest1(CheckpointType checkpointType, ICheckpointManager checkpointManager = null)
+        {
+            string checkpointDir = TestContext.CurrentContext.TestDirectory + $"\\{TEST_CONTAINER}";
+
+            if (checkpointManager != null)
+                checkpointDir = null;
+
+            log = Devices.CreateLogDevice(TestContext.CurrentContext.TestDirectory + "\\SimpleRecoveryTest1.log", deleteOnClose: true);
 
             fht1 = new FasterKV
-                <AdId, NumClicks, Input, Output, Empty, SimpleFunctions>
-                (128, new SimpleFunctions(),
+                <AdId, NumClicks>
+                (128,
                 logSettings: new LogSettings { LogDevice = log, MutableFraction = 0.1, MemorySizeBits = 29 },
-                checkpointSettings: new CheckpointSettings { CheckpointDir = TestContext.CurrentContext.TestDirectory + "\\checkpoints5", CheckPointType = CheckpointType.FoldOver }
+                checkpointSettings: new CheckpointSettings { CheckpointDir = checkpointDir, CheckpointManager = checkpointManager, CheckPointType = checkpointType }
                 );
 
             fht2 = new FasterKV
-                <AdId, NumClicks, Input, Output, Empty, SimpleFunctions>
-                (128, new SimpleFunctions(),
+                <AdId, NumClicks>
+                (128,
                 logSettings: new LogSettings { LogDevice = log, MutableFraction = 0.1, MemorySizeBits = 29 },
-                checkpointSettings: new CheckpointSettings { CheckpointDir = TestContext.CurrentContext.TestDirectory + "\\checkpoints5", CheckPointType = CheckpointType.FoldOver }
+                checkpointSettings: new CheckpointSettings { CheckpointDir = checkpointDir, CheckpointManager = checkpointManager, CheckPointType = checkpointType }
                 );
 
 
@@ -116,38 +87,111 @@ namespace FASTER.test.recovery.sumstore.simple
             }
 
             NumClicks value;
-            Input inputArg = default(Input);
-            Output output = default(Output);
+            AdInput inputArg = default;
+            Output output = default;
 
-            fht1.StartSession();
+            var session1 = fht1.NewSession(new SimpleFunctions());
             for (int key = 0; key < numOps; key++)
             {
                 value.numClicks = key;
-                fht1.Upsert(ref inputArray[key], ref value, Empty.Default, 0);
+                session1.Upsert(ref inputArray[key], ref value, Empty.Default, 0);
             }
             fht1.TakeFullCheckpoint(out Guid token);
-            fht1.CompleteCheckpoint(true);
-            fht1.StopSession();
+            fht1.CompleteCheckpointAsync().GetAwaiter().GetResult();
+            session1.Dispose();
 
             fht2.Recover(token);
-            fht2.StartSession();
+
+            var session2 = fht2.NewSession(new SimpleFunctions());
             for (int key = 0; key < numOps; key++)
             {
-                var status = fht2.Read(ref inputArray[key], ref inputArg, ref output, Empty.Default, 0);
+                var status = session2.Read(ref inputArray[key], ref inputArg, ref output, Empty.Default, 0);
 
                 if (status == Status.PENDING)
-                    fht2.CompletePending(true);
+                    session2.CompletePending(true);
                 else
                 {
                     Assert.IsTrue(output.value.numClicks == key);
                 }
             }
-            fht2.StopSession();
+            session2.Dispose();
 
-            log.Close();
+            log.Dispose();
             fht1.Dispose();
             fht2.Dispose();
-            new DirectoryInfo(TestContext.CurrentContext.TestDirectory + "\\checkpoints5").Delete(true);
+
+            if (checkpointManager == null)
+                new DirectoryInfo(checkpointDir).Delete(true);
+        }
+
+        [TestCase(CheckpointType.FoldOver)]
+        [TestCase(CheckpointType.Snapshot)]
+        public void SimpleRecoveryTest2(CheckpointType checkpointType)
+        {
+            var checkpointManager = new DeviceLogCommitCheckpointManager(new LocalStorageNamedDeviceFactory(), new DefaultCheckpointNamingScheme(TestContext.CurrentContext.TestDirectory + "\\checkpoints4"), false);
+
+            log = Devices.CreateLogDevice(TestContext.CurrentContext.TestDirectory + "\\SimpleRecoveryTest2.log", deleteOnClose: true);
+
+            // Directory.CreateDirectory(TestContext.CurrentContext.TestDirectory + "\\checkpoints4");
+
+            fht1 = new FasterKV
+                <AdId, NumClicks>
+                (128,
+                logSettings: new LogSettings { LogDevice = log, MutableFraction = 0.1, MemorySizeBits = 29 },
+                checkpointSettings: new CheckpointSettings { CheckpointManager = checkpointManager, CheckPointType = checkpointType }
+                );
+
+            fht2 = new FasterKV
+                <AdId, NumClicks>
+                (128,
+                logSettings: new LogSettings { LogDevice = log, MutableFraction = 0.1, MemorySizeBits = 29 },
+                checkpointSettings: new CheckpointSettings { CheckpointManager = checkpointManager, CheckPointType = checkpointType }
+                );
+
+
+            int numOps = 5000;
+            var inputArray = new AdId[numOps];
+            for (int i = 0; i < numOps; i++)
+            {
+                inputArray[i].adId = i;
+            }
+
+            NumClicks value;
+            AdInput inputArg = default;
+            Output output = default;
+
+            var session1 = fht1.NewSession(new SimpleFunctions());
+            for (int key = 0; key < numOps; key++)
+            {
+                value.numClicks = key;
+                session1.Upsert(ref inputArray[key], ref value, Empty.Default, 0);
+            }
+            fht1.TakeFullCheckpoint(out Guid token);
+            fht1.CompleteCheckpointAsync().GetAwaiter().GetResult();
+            session1.Dispose();
+
+            fht2.Recover(token);
+
+            var session2 = fht2.NewSession(new SimpleFunctions());
+            for (int key = 0; key < numOps; key++)
+            {
+                var status = session2.Read(ref inputArray[key], ref inputArg, ref output, Empty.Default, 0);
+
+                if (status == Status.PENDING)
+                    session2.CompletePending(true);
+                else
+                {
+                    Assert.IsTrue(output.value.numClicks == key);
+                }
+            }
+            session2.Dispose();
+
+            log.Dispose();
+            fht1.Dispose();
+            fht2.Dispose();
+            checkpointManager.Dispose();
+
+            new DirectoryInfo(TestContext.CurrentContext.TestDirectory + "\\checkpoints4").Delete(true);
         }
 
         [Test]
@@ -155,18 +199,18 @@ namespace FASTER.test.recovery.sumstore.simple
         {
             log = Devices.CreateLogDevice(TestContext.CurrentContext.TestDirectory + "\\SimpleRecoveryTest2.log", deleteOnClose: true);
 
-            Directory.CreateDirectory(TestContext.CurrentContext.TestDirectory + "\\checkpoints5");
+            Directory.CreateDirectory(TestContext.CurrentContext.TestDirectory + "\\checkpoints6");
 
             fht1 = new FasterKV
-                <AdId, NumClicks, Input, Output, Empty, SimpleFunctions>
-                (128, new SimpleFunctions(),
+                <AdId, NumClicks>
+                (128,
                 logSettings: new LogSettings { LogDevice = log, MutableFraction = 0.1, MemorySizeBits = 29 },
                 checkpointSettings: new CheckpointSettings { CheckpointDir = TestContext.CurrentContext.TestDirectory + "\\checkpoints6", CheckPointType = CheckpointType.FoldOver }
                 );
 
             fht2 = new FasterKV
-                <AdId, NumClicks, Input, Output, Empty, SimpleFunctions>
-                (128, new SimpleFunctions(),
+                <AdId, NumClicks>
+                (128,
                 logSettings: new LogSettings { LogDevice = log, MutableFraction = 0.1, MemorySizeBits = 29 },
                 checkpointSettings: new CheckpointSettings { CheckpointDir = TestContext.CurrentContext.TestDirectory + "\\checkpoints6", CheckPointType = CheckpointType.FoldOver }
                 );
@@ -181,12 +225,12 @@ namespace FASTER.test.recovery.sumstore.simple
 
             NumClicks value;
 
-            fht1.StartSession();
+            var session1 = fht1.NewSession(new SimpleFunctions());
             var address = 0L;
             for (int key = 0; key < numOps; key++)
             {
                 value.numClicks = key;
-                fht1.Upsert(ref inputArray[key], ref value, Empty.Default, 0);
+                session1.Upsert(ref inputArray[key], ref value, Empty.Default, 0);
 
                 if (key == 2999)
                     address = fht1.Log.TailAddress;
@@ -195,27 +239,27 @@ namespace FASTER.test.recovery.sumstore.simple
             fht1.Log.ShiftBeginAddress(address);
 
             fht1.TakeFullCheckpoint(out Guid token);
-            fht1.CompleteCheckpoint(true);
-            fht1.StopSession();
+            fht1.CompleteCheckpointAsync().GetAwaiter().GetResult();
+            session1.Dispose();
 
             fht2.Recover(token);
 
             Assert.AreEqual(address, fht2.Log.BeginAddress);
 
-            log.Close();
+            log.Dispose();
             fht1.Dispose();
             fht2.Dispose();
             new DirectoryInfo(TestContext.CurrentContext.TestDirectory + "\\checkpoints6").Delete(true);
         }
     }
 
-    public class SimpleFunctions : IFunctions<AdId, NumClicks, Input, Output, Empty>
+    public class SimpleFunctions : IFunctions<AdId, NumClicks, AdInput, Output, Empty>
     {
-        public void RMWCompletionCallback(ref AdId key, ref Input input, Empty ctx, Status status)
+        public void RMWCompletionCallback(ref AdId key, ref AdInput input, Empty ctx, Status status)
         {
         }
 
-        public void ReadCompletionCallback(ref AdId key, ref Input input, ref Output output, Empty ctx, Status status)
+        public void ReadCompletionCallback(ref AdId key, ref AdInput input, ref Output output, Empty ctx, Status status)
         {
             Assert.IsTrue(status == Status.OK);
             Assert.IsTrue(output.value.numClicks == key.adId);
@@ -229,18 +273,18 @@ namespace FASTER.test.recovery.sumstore.simple
         {
         }
 
-        public void CheckpointCompletionCallback(Guid sessionId, long serialNum)
+        public void CheckpointCompletionCallback(string sessionId, CommitPoint commitPoint)
         {
-            Console.WriteLine("Session {0} reports persistence until {1}", sessionId, serialNum);
+            Console.WriteLine("Session {0} reports persistence until {1}", sessionId, commitPoint.UntilSerialNo);
         }
 
         // Read functions
-        public void SingleReader(ref AdId key, ref Input input, ref NumClicks value, ref Output dst)
+        public void SingleReader(ref AdId key, ref AdInput input, ref NumClicks value, ref Output dst)
         {
             dst.value = value;
         }
 
-        public void ConcurrentReader(ref AdId key, ref Input input, ref NumClicks value, ref Output dst)
+        public void ConcurrentReader(ref AdId key, ref AdInput input, ref NumClicks value, ref Output dst)
         {
             dst.value = value;
         }
@@ -258,20 +302,21 @@ namespace FASTER.test.recovery.sumstore.simple
         }
 
         // RMW functions
-        public void InitialUpdater(ref AdId key, ref Input input, ref NumClicks value)
+        public void InitialUpdater(ref AdId key, ref AdInput input, ref NumClicks value)
         {
             value = input.numClicks;
         }
 
-        public bool InPlaceUpdater(ref AdId key, ref Input input, ref NumClicks value)
+        public bool InPlaceUpdater(ref AdId key, ref AdInput input, ref NumClicks value)
         {
             Interlocked.Add(ref value.numClicks, input.numClicks.numClicks);
             return true;
         }
 
-        public void CopyUpdater(ref AdId key, ref Input input, ref NumClicks oldValue, ref NumClicks newValue)
+        public void CopyUpdater(ref AdId key, ref AdInput input, ref NumClicks oldValue, ref NumClicks newValue)
         {
             newValue.numClicks += oldValue.numClicks + input.numClicks.numClicks;
         }
     }
 }
+ 

@@ -4,6 +4,7 @@
 #pragma warning disable 0162
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -56,13 +57,13 @@ namespace FASTER.core
             }
             catch (Exception e)
             {
-                throw new Exception("Unable to recover from previous commit. Inner exception: " + e.ToString());
+                throw new FasterException("Unable to recover from previous commit. Inner exception: " + e.ToString());
             }
             if (version != 0)
-                throw new Exception("Invalid version found during commit recovery");
+                throw new FasterException("Invalid version found during commit recovery");
 
             if (checkSum != (BeginAddress ^ FlushedUntilAddress))
-                throw new Exception("Invalid checksum found during commit recovery");
+                throw new FasterException("Invalid checksum found during commit recovery");
 
             var count = 0;
             try
@@ -82,20 +83,6 @@ namespace FASTER.core
         }
 
         /// <summary>
-        ///  Recover info from token
-        /// </summary>
-        /// <param name="logCommitManager"></param>
-        /// <returns></returns>
-        internal void Recover(ILogCommitManager logCommitManager)
-        {
-            var metadata = logCommitManager.GetCommitMetadata();
-            if (metadata == null)
-                throw new Exception("Invalid log commit metadata during recovery");
-
-            Initialize(new BinaryReader(new MemoryStream(metadata)));
-        }
-
-        /// <summary>
         /// Reset
         /// </summary>
         public void Reset()
@@ -106,7 +93,7 @@ namespace FASTER.core
         /// <summary>
         /// Write info to byte array
         /// </summary>
-        public byte[] ToByteArray()
+        public readonly byte[] ToByteArray()
         {
             using (var ms = new MemoryStream())
             {
@@ -125,6 +112,10 @@ namespace FASTER.core
                             writer.Write(kvp.Value);
                         }
                     }
+                    else
+                    {
+                        writer.Write(0);
+                    }
                 }
                 return ms.ToArray();
             }
@@ -133,15 +124,31 @@ namespace FASTER.core
         /// <summary>
         /// Take snapshot of persisted iterators
         /// </summary>
-        public void PopulateIterators()
+        /// <param name="persistedIterators">Persisted iterators</param>
+        public void SnapshotIterators(ConcurrentDictionary<string, FasterLogScanIterator> persistedIterators)
         {
-            if (FasterLogScanIterator.PersistedIterators.Count > 0)
+            if (persistedIterators.Count > 0)
             {
                 Iterators = new Dictionary<string, long>();
 
-                foreach (var kvp in FasterLogScanIterator.PersistedIterators)
+                foreach (var kvp in persistedIterators)
                 {
-                    Iterators.Add(kvp.Key, kvp.Value.CurrentAddress);
+                    Iterators.Add(kvp.Key, kvp.Value.requestedCompletedUntilAddress);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Update iterators after persistence
+        /// </summary>
+        /// <param name="persistedIterators">Persisted iterators</param>
+        public void CommitIterators(ConcurrentDictionary<string, FasterLogScanIterator> persistedIterators)
+        {
+            if (Iterators?.Count > 0)
+            {
+                foreach (var kvp in Iterators)
+                {
+                    persistedIterators[kvp.Key].UpdateCompletedUntilAddress(kvp.Value);
                 }
             }
         }
