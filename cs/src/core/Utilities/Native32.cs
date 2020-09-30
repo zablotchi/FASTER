@@ -44,6 +44,45 @@ namespace FASTER.core
             public IntPtr VolumeHandle;
             public uint HandleInfo;
         }
+
+        internal enum FILE_INFO_BY_HANDLE_CLASS
+        {
+            FileBasicInfo = 0,
+            FileStandardInfo = 1,
+            FileNameInfo = 2,
+            FileRenameInfo = 3,
+            FileDispositionInfo = 4,
+            FileAllocationInfo = 5,
+            FileEndOfFileInfo = 6,
+            FileStreamInfo = 7,
+            FileCompressionInfo = 8,
+            FileAttributeTagInfo = 9,
+            FileIdBothDirectoryInfo = 10,// 0x0A
+            FileIdBothDirectoryRestartInfo = 11, // 0xB
+            FileIoPriorityHintInfo = 12, // 0xC
+            FileRemoteProtocolInfo = 13, // 0xD
+            FileFullDirectoryInfo = 14, // 0xE
+            FileFullDirectoryRestartInfo = 15, // 0xF
+            FileStorageInfo = 16, // 0x10
+            FileAlignmentInfo = 17, // 0x11
+            FileIdInfo = 18, // 0x12
+            FileIdExtdDirectoryInfo = 19, // 0x13
+            FileIdExtdDirectoryRestartInfo = 20, // 0x14
+            MaximumFileInfoByHandlesClass
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct FILE_STORAGE_INFO
+        {
+            public uint LogicalBytesPerSector;
+            public uint PhysicalBytesPerSectorForAtomicity;
+            public uint PhysicalBytesPerSectorForPerformance;
+            public uint FileSystemEffectivePhysicalBytesPerSectorForAtomicity;
+            public uint Flags;
+            public uint ByteOffsetForSectorAlignment;
+            public uint ByteOffsetForPartitionAlignment;
+        }
+
         #endregion
 
         #region io constants and flags
@@ -112,9 +151,13 @@ namespace FASTER.core
            out uint lpNumberOfFreeClusters,
            out uint lpTotalNumberOfClusters);
 
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        internal static extern bool GetFileInformationByHandleEx([In] SafeFileHandle hFile, FILE_INFO_BY_HANDLE_CLASS infoClass, out FILE_STORAGE_INFO fileStorageInfo, uint dwBufferSize);
+
+
         [DllImport("kernel32.dll", SetLastError = true)]
         internal static extern bool DeleteFileW([MarshalAs(UnmanagedType.LPWStr)]string lpFileName);
-#endregion
+        #endregion
 
         #region Thread and NUMA functions
         [DllImport("kernel32.dll")]
@@ -171,7 +214,7 @@ namespace FASTER.core
 
             if (SetThreadGroupAffinity(thread, ref groupAffinityThread, ref oldAffinityThread) == 0)
             {
-                throw new Exception("Unable to affinitize thread");
+                throw new FasterException("Unable to affinitize thread");
             }
         }
 
@@ -241,10 +284,19 @@ namespace FASTER.core
             if (!LookupPrivilegeValue(null, "SeManageVolumePrivilege",
                 ref token_privileges.Privileges.Luid)) return false;
 
-            if (!OpenProcessToken(GetCurrentProcess(), 0x20, out IntPtr token)) return false;
+            if (!OpenProcessToken(GetCurrentProcess(), 0x20, out IntPtr token))
+                return false;
 
-            if (!AdjustTokenPrivileges(token, 0, ref token_privileges, 0, 0, 0)) return false;
-            if (Marshal.GetLastWin32Error() != 0) return false;
+            if (!AdjustTokenPrivileges(token, 0, ref token_privileges, 0, 0, 0))
+            {
+                CloseHandle(token);
+                return false;
+            }
+            if (Marshal.GetLastWin32Error() != 0)
+            {
+                CloseHandle(token);
+                return false;
+            }
             CloseHandle(token);
             return true;
         }
@@ -282,13 +334,8 @@ namespace FASTER.core
                 (void*)&mhi, sizeof(MARK_HANDLE_INFO), IntPtr.Zero,
                 0, ref bytes_returned, IntPtr.Zero);
 
-            if (!result)
-            {
-                return false;
-            }
-
             volume_handle.Close();
-            return true;
+            return result;
         }
 
         /// <summary>

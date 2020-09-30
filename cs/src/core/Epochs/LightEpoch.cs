@@ -12,7 +12,7 @@ namespace FASTER.core
     /// <summary>
     /// Epoch protection
     /// </summary>
-    public unsafe class LightEpoch
+    public unsafe sealed class LightEpoch
     {
         /// <summary>
         /// Default invalid index entry.
@@ -36,9 +36,9 @@ namespace FASTER.core
         private GCHandle tableHandle;
         private Entry* tableAligned;
 
-        private static Entry[] threadIndex;
+        private static readonly Entry[] threadIndex;
         private static GCHandle threadIndexHandle;
-        private static Entry* threadIndexAligned;
+        private static readonly Entry* threadIndexAligned;
 
         /// <summary>
         /// List of action, epoch pairs containing actions to performed 
@@ -61,6 +61,9 @@ namespace FASTER.core
 
         [ThreadStatic]
         static int threadId;
+
+        [ThreadStatic]
+        static int threadIdHash;
 
         /// <summary>
         /// Global current epoch value
@@ -123,12 +126,32 @@ namespace FASTER.core
         }
 
         /// <summary>
-        /// Check whether current thread is protected
+        /// Check whether current epoch instance is protected on this thread
         /// </summary>
         /// <returns>Result of the check</returns>
-        public bool IsProtected()
+        public bool ThisInstanceProtected()
         {
-            return kInvalidIndex != threadEntryIndex;
+            int entry = threadEntryIndex;
+            if (kInvalidIndex != entry)
+            {
+                if ((*(tableAligned + entry)).threadId == entry)
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Check whether any epoch instance is protected on this thread
+        /// </summary>
+        /// <returns>Result of the check</returns>
+        public static bool AnyInstanceProtected()
+        {
+            int entry = threadEntryIndex;
+            if (kInvalidIndex != entry)
+            {
+                return threadEntryIndexCount > 0;
+            }
+            return false;
         }
 
         /// <summary>
@@ -149,6 +172,27 @@ namespace FASTER.core
             }
 
             return (*(tableAligned + entry)).localCurrentEpoch;
+        }
+
+        /// <summary>
+        /// Take care of pending drains after epoch suspend
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void SuspendDrain()
+        {
+            while (drainCount > 0)
+            {
+                for (int index = 1; index <= kTableSize; ++index)
+                {
+                    int entry_epoch = (*(tableAligned + index)).localCurrentEpoch;
+                    if (0 != entry_epoch)
+                    {
+                        return;
+                    }
+                }
+                Resume();
+                Suspend();
+            }
         }
 
         /// <summary>
@@ -182,7 +226,7 @@ namespace FASTER.core
         /// Thread acquires its epoch entry
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Acquire()
+        private void Acquire()
         {
             if (threadEntryIndex == kInvalidIndex)
                 threadEntryIndex = ReserveEntryForThread();
@@ -194,7 +238,7 @@ namespace FASTER.core
         /// Thread releases its epoch entry
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Release()
+        private void Release()
         {
             int entry = threadEntryIndex;
             (*(tableAligned + entry)).localCurrentEpoch = 0;
@@ -215,6 +259,7 @@ namespace FASTER.core
         public void Suspend()
         {
             Release();
+            if (drainCount > 0) SuspendDrain();
         }
 
         /// <summary>
@@ -358,7 +403,7 @@ namespace FASTER.core
 
                 if (current_iteration > (kTableSize * 10))
                 {
-                    throw new Exception("Unable to reserve an epoch entry, try increasing the epoch table size (kTableSize)");
+                    throw new FasterException("Unable to reserve an epoch entry, try increasing the epoch table size (kTableSize)");
                 }
             }
         }
@@ -372,11 +417,11 @@ namespace FASTER.core
         {
             if (threadId == 0) // run once per thread for performance
             {
-                // For portability(run on non-windows platform)
+                // For portability (run on non-windows platform)
                 threadId = Environment.OSVersion.Platform == PlatformID.Win32NT ? (int)Native32.GetCurrentThreadId() : Thread.CurrentThread.ManagedThreadId;
+                threadIdHash = Utility.Murmur3(threadId);
             }
-            int startIndex = Utility.Murmur3(threadId);
-            return ReserveEntry(startIndex, threadId);
+            return ReserveEntry(threadIdHash, threadId);
         }
 
         /// <summary>
@@ -385,7 +430,6 @@ namespace FASTER.core
         [StructLayout(LayoutKind.Explicit, Size = Constants.kCacheLineBytes)]
         private struct Entry
         {
-
             /// <summary>
             /// Thread-local value of epoch
             /// </summary>
@@ -413,24 +457,27 @@ namespace FASTER.core
 
         /// <summary>
         /// Mechanism for threads to mark some activity as completed until
-        /// some version by this thread, and check if all active threads 
-        /// have completed the same activity until that version.
+        /// some version by this thread
         /// </summary>
         /// <param name="markerIdx">ID of activity</param>
         /// <param name="version">Version</param>
         /// <returns></returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool MarkAndCheckIsComplete(int markerIdx, int version)
+        public void Mark(int markerIdx, int version)
         {
-            int entry = threadEntryIndex;
-            if (kInvalidIndex == entry)
-            {
-                Debug.WriteLine("New Thread entered during CPR");
-                Debug.Assert(false);
-            }
+            (*(tableAligned + threadEntryIndex)).markers[markerIdx] = version;
+        }
 
-            (*(tableAligned + entry)).markers[markerIdx] = version;
-
+        /// <summary>
+        /// Check if all active threads have completed the some
+        /// activity until given version.
+        /// </summary>
+        /// <param name="markerIdx">ID of activity</param>
+        /// <param name="version">Version</param>
+        /// <returns>Whether complete</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool CheckIsComplete(int markerIdx, int version)
+        {
             // check if all threads have reported complete
             for (int index = 1; index <= kTableSize; ++index)
             {

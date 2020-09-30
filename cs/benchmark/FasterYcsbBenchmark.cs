@@ -3,7 +3,8 @@
 
 #pragma warning disable 0162
 
-//#define DASHBOARD
+// Define below to enable continuous performance report for dashboard
+// #define DASHBOARD
 
 using FASTER.core;
 using System;
@@ -24,8 +25,32 @@ namespace FASTER.benchmark
             ReadModifyWrite = 2
         }
 
-        const bool kUseSyntheticData = false;
+#if DEBUG
+        const bool kDumpDistribution = false;
+        const bool kUseSmallData = true;
+        const bool kUseSyntheticData = true;
+        const bool kSmallMemoryLog = false;
+        const bool kAffinitizedSession = true;
+        const int kRunSeconds = 30;
+        const int kPeriodicCheckpointMilliseconds = 0;
+#else
+        const bool kDumpDistribution = false;
         const bool kUseSmallData = false;
+        const bool kUseSyntheticData = false;
+        const bool kSmallMemoryLog = false;
+        const bool kAffinitizedSession = true;
+        const int kRunSeconds = 30;
+        const int kPeriodicCheckpointMilliseconds = 0;
+#endif
+
+        // *** Use below settings to backup and recover database for fast benchmark repeat runs
+        // First set kBackupStoreForFastRestarts to get the backup
+        // Then reset kBackupStoreForFastRestarts and set kRestoreFromBackupForFastRestarts for fast subsequent runs
+        // Does NOT work when periodic checkpointing is turned on
+        const bool kBackupStoreForFastRestarts = false;
+        const bool kRestoreFromBackupForFastRestarts = false;
+        // ***
+
         const long kInitCount = kUseSmallData ? 2500480 : 250000000;
         const long kTxnCount = kUseSmallData ? 10000000 : 1000000000;
         const int kMaxKey = kUseSmallData ? 1 << 22 : 1 << 28;
@@ -42,18 +67,15 @@ namespace FASTER.benchmark
         Input[] input_;
         readonly IDevice device;
 
-        FasterKV<Key, Value, Input, Output, Empty, Functions> store;
+        readonly FasterKV<Key, Value> store;
 
         long total_ops_done = 0;
 
-        const string kKeyWorkload = "a";
         readonly int threadCount;
         readonly int numaStyle;
         readonly string distribution;
         readonly int readPercent;
-
-        const int kRunSeconds = 30;
-        const int kCheckpointSeconds = -1;
+        readonly Functions functions = new Functions();
 
         volatile bool done = false;
 
@@ -78,10 +100,15 @@ namespace FASTER.benchmark
             freq = Stopwatch.Frequency;
 #endif
 
-            device = Devices.CreateLogDevice("C:\\data\\hlog");
+            var path = "D:\\data\\FasterYcsbBenchmark\\";
+            device = Devices.CreateLogDevice(path + "hlog", preallocateFile: true);
 
-            store = new FasterKV<Key, Value, Input, Output, Empty, Functions>
-                (kMaxKey / 2, new Functions(), new LogSettings { LogDevice = device });
+            if (kSmallMemoryLog)
+                store = new FasterKV<Key, Value>
+                    (kMaxKey / 2, new LogSettings { LogDevice = device, PreallocateLog = true, PageSizeBits = 22, SegmentSizeBits = 26, MemorySizeBits = 26 }, new CheckpointSettings { CheckPointType = CheckpointType.FoldOver, CheckpointDir = path });
+            else
+                store = new FasterKV<Key, Value>
+                    (kMaxKey / 2, new LogSettings { LogDevice = device, PreallocateLog = true }, new CheckpointSettings { CheckPointType = CheckpointType.FoldOver, CheckpointDir = path });
         }
 
         private void RunYcsb(int thread_idx)
@@ -97,9 +124,9 @@ namespace FASTER.benchmark
             sw.Start();
 
 
-            Value value = default(Value);
-            Input input = default(Input);
-            Output output = default(Output);
+            Value value = default;
+            Input input = default;
+            Output output = default;
 
             long reads_done = 0;
             long writes_done = 0;
@@ -111,7 +138,7 @@ namespace FASTER.benchmark
             int count = 0;
 #endif
 
-            store.StartSession();
+            var session = store.For(functions).NewSession<Functions>(null, kAffinitizedSession);
 
             while (!done)
             {
@@ -134,40 +161,31 @@ namespace FASTER.benchmark
                     else
                         op = Op.ReadModifyWrite;
 
-                    if (idx % 256 == 0)
+                    if (idx % 512 == 0)
                     {
-                        store.Refresh();
-
-                        if (idx % 65536 == 0)
-                        {
-                            store.CompletePending(false);
-                        }
+                        if (kAffinitizedSession)
+                            session.Refresh();
+                        session.CompletePending(false);
                     }
 
                     switch (op)
                     {
                         case Op.Upsert:
                             {
-                                store.Upsert(ref txn_keys_[idx], ref value, Empty.Default, 1);
+                                session.Upsert(ref txn_keys_[idx], ref value, Empty.Default, 1);
                                 ++writes_done;
                                 break;
                             }
                         case Op.Read:
                             {
-                                Status result = store.Read(ref txn_keys_[idx], ref input, ref output, Empty.Default, 1);
-                                if (result == Status.OK)
-                                {
-                                    ++reads_done;
-                                }
+                                session.Read(ref txn_keys_[idx], ref input, ref output, Empty.Default, 1);
+                                ++reads_done;
                                 break;
                             }
                         case Op.ReadModifyWrite:
                             {
-                                Status result = store.RMW(ref txn_keys_[idx], ref input_[idx & 0x7], Empty.Default, 1);
-                                if (result == Status.OK)
-                                {
-                                    ++writes_done;
-                                }
+                                session.RMW(ref txn_keys_[idx], ref input_[idx & 0x7], Empty.Default, 1);
+                                ++writes_done;
                                 break;
                             }
                         default:
@@ -192,9 +210,14 @@ namespace FASTER.benchmark
 #endif
             }
 
-            store.CompletePending(true);
-            store.StopSession();
+            session.CompletePending(true);
+            session.Dispose();
+
             sw.Stop();
+
+#if DASHBOARD
+            statsWritten[thread_idx].Set();
+#endif
 
             Console.WriteLine("Thread " + thread_idx + " done; " + reads_done + " reads, " +
                 writes_done + " writes, in " + sw.ElapsedMilliseconds + " ms.");
@@ -203,7 +226,7 @@ namespace FASTER.benchmark
 
         public unsafe void Run()
         {
-            Native32.AffinitizeThreadShardedNuma((uint)0, 2);
+            // Native32.AffinitizeThreadShardedNuma((uint)0, 2);
 
             RandomGenerator rng = new RandomGenerator();
 
@@ -222,33 +245,57 @@ namespace FASTER.benchmark
 
             Console.WriteLine("Executing setup.");
 
-            // Setup the store for the YCSB benchmark.
-            for (int idx = 0; idx < threadCount; ++idx)
-            {
-                int x = idx;
-                workers[idx] = new Thread(() => SetupYcsb(x));
-            }
-
             Stopwatch sw = new Stopwatch();
-            sw.Start();
-            // Start threads.
-            foreach (Thread worker in workers)
+            if (kRestoreFromBackupForFastRestarts && kPeriodicCheckpointMilliseconds <= 0)
             {
-                worker.Start();
+                sw.Start();
+                store.Recover();
+                sw.Stop();
             }
-            foreach (Thread worker in workers)
+            else
             {
-                worker.Join();
+                // Setup the store for the YCSB benchmark.
+                for (int idx = 0; idx < threadCount; ++idx)
+                {
+                    int x = idx;
+                    workers[idx] = new Thread(() => SetupYcsb(x));
+                }
+
+                sw.Start();
+                // Start threads.
+                foreach (Thread worker in workers)
+                {
+                    worker.Start();
+                }
+                foreach (Thread worker in workers)
+                {
+                    worker.Join();
+                }
+                sw.Stop();
             }
-            sw.Stop();
             Console.WriteLine("Loading time: {0}ms", sw.ElapsedMilliseconds);
 
             long startTailAddress = store.Log.TailAddress;
             Console.WriteLine("Start tail address = " + startTailAddress);
 
+            if (kBackupStoreForFastRestarts && kPeriodicCheckpointMilliseconds <= 0)
+            {
+                store.TakeFullCheckpoint(out _);
+                store.CompleteCheckpointAsync().GetAwaiter().GetResult();
+                Console.WriteLine("Completed checkpoint");
+            }
+
+            // Uncomment below to dispose log from memory, use for 100% read workloads only
+            // store.Log.DisposeFromMemory();
 
             idx_ = 0;
-            Console.WriteLine(store.DumpDistribution());
+
+            if (kDumpDistribution)
+                Console.WriteLine(store.DumpDistribution());
+
+            // Ensure first checkpoint is fast
+            if (kPeriodicCheckpointMilliseconds > 0)
+                store.Log.ShiftReadOnlyAddress(store.Log.TailAddress, true);
 
             Console.WriteLine("Executing experiment.");
 
@@ -267,19 +314,24 @@ namespace FASTER.benchmark
             Stopwatch swatch = new Stopwatch();
             swatch.Start();
 
-            if (kCheckpointSeconds <= 0)
+            if (kPeriodicCheckpointMilliseconds <= 0)
             {
                 Thread.Sleep(TimeSpan.FromSeconds(kRunSeconds));
             }
             else
             {
-                int runSeconds = 0;
-                while (runSeconds < kRunSeconds)
+                var checkpointTaken = 0;
+                while (swatch.ElapsedMilliseconds < 1000 * kRunSeconds)
                 {
-                    Thread.Sleep(TimeSpan.FromSeconds(kCheckpointSeconds));
-                    store.TakeFullCheckpoint(out Guid token);
-                    runSeconds += kCheckpointSeconds;
+                    if (checkpointTaken < swatch.ElapsedMilliseconds / kPeriodicCheckpointMilliseconds)
+                    {
+                        if (store.TakeHybridLogCheckpoint(out _))
+                        {
+                            checkpointTaken++;
+                        }
+                    }
                 }
+                Console.WriteLine($"Checkpoint taken {checkpointTaken}");
             }
 
             swatch.Stop();
@@ -292,7 +344,7 @@ namespace FASTER.benchmark
             }
 
 #if DASHBOARD
-            dash.Abort();
+            dash.Join();
 #endif
 
             double seconds = swatch.ElapsedMilliseconds / 1000.0;
@@ -303,6 +355,7 @@ namespace FASTER.benchmark
             Console.WriteLine("##, " + distribution + ", " + numaStyle + ", " + readPercent + ", "
                 + threadCount + ", " + total_ops_done / seconds + ", "
                 + (endTailAddress - startTailAddress));
+            device.Dispose();
         }
 
         private void SetupYcsb(int thread_idx)
@@ -312,7 +365,7 @@ namespace FASTER.benchmark
             else
                 Native32.AffinitizeThreadShardedNuma((uint)thread_idx, 2); // assuming two NUMA sockets
 
-            store.StartSession();
+            var session = store.For(functions).NewSession<Functions>(null, kAffinitizedSession);
 
 #if DASHBOARD
             var tstart = Stopwatch.GetTimestamp();
@@ -321,7 +374,7 @@ namespace FASTER.benchmark
             int count = 0;
 #endif
 
-            Value value = default(Value);
+            Value value = default;
 
             for (long chunk_idx = Interlocked.Add(ref idx_, kChunkSize) - kChunkSize;
                 chunk_idx < kInitCount;
@@ -331,15 +384,15 @@ namespace FASTER.benchmark
                 {
                     if (idx % 256 == 0)
                     {
-                        store.Refresh();
+                        session.Refresh();
 
                         if (idx % 65536 == 0)
                         {
-                            store.CompletePending(false);
+                            session.CompletePending(false);
                         }
                     }
 
-                    store.Upsert(ref init_keys_[idx], ref value, Empty.Default, 1);
+                    session.Upsert(ref init_keys_[idx], ref value, Empty.Default, 1);
                 }
 #if DASHBOARD
                 count += (int)kChunkSize;
@@ -357,14 +410,12 @@ namespace FASTER.benchmark
 #endif
             }
 
-
-            store.CompletePending(true);
-            store.StopSession();
+            session.CompletePending(true);
+            session.Dispose();
         }
 
 #if DASHBOARD
         int measurementInterval = 2000;
-        bool allDone;
         bool measureLatency;
         bool[] writeStats;
         private EventWaitHandle[] statsWritten;
@@ -376,19 +427,13 @@ namespace FASTER.benchmark
 
         void DoContinuousMeasurements()
         {
-
-            if (numaStyle == 0)
-                Native32.AffinitizeThreadRoundRobin((uint)threadCount + 1);
-            else
-                Native32.AffinitizeThreadShardedTwoNuma((uint)threadCount + 1);
-
             double totalThroughput, totalLatency, maximumLatency;
             double totalProgress;
             int ver = 0;
 
             using (var client = new WebClient())
             {
-                while (!allDone)
+                while (!done)
                 {
                     ver++;
 
@@ -422,11 +467,11 @@ namespace FASTER.benchmark
 
                     if (measureLatency)
                     {
-                        Console.WriteLine("{0} \t {1:0.000} \t {2} \t {3} \t {4} \t {5}", ver, totalThroughput / (double)1000000, totalLatency / threadCount, maximumLatency, store.LogTailAddress, totalProgress);
+                        Console.WriteLine("{0} \t {1:0.000} \t {2} \t {3} \t {4} \t {5}", ver, totalThroughput / (double)1000000, totalLatency / threadCount, maximumLatency, store.Log.TailAddress, totalProgress);
                     }
                     else
                     {
-                        Console.WriteLine("{0} \t {1:0.000} \t {2} \t {3}", ver, totalThroughput / (double)1000000, store.LogTailAddress, totalProgress);
+                        Console.WriteLine("{0} \t {1:0.000} \t {2} \t {3}", ver, totalThroughput / (double)1000000, store.Log.TailAddress, totalProgress);
                     }
                 }
             }

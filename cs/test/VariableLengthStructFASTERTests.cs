@@ -20,19 +20,18 @@ namespace FASTER.test
         [Test]
         public unsafe void VariableLengthTest1()
         {
-            FasterKV<Key, VLValue, Input, int[], Empty, VLFunctions> fht;
+            FasterKV<Key, VLValue> fht;
             IDevice log;
             log = Devices.CreateLogDevice(TestContext.CurrentContext.TestDirectory + "\\hlog1.log", deleteOnClose: true);
-            fht = new FasterKV<Key, VLValue, Input, int[], Empty, VLFunctions>
-                (128, new VLFunctions(),
+            fht = new FasterKV<Key, VLValue>
+                (128,
                 new LogSettings { LogDevice = log, MemorySizeBits = 17, PageSizeBits = 12 },
                 null, null, null, new VariableLengthStructSettings<Key, VLValue> { valueLength = new VLValue() }
                 );
-            fht.StartSession();
 
+            var s = fht.NewSession(new VLFunctions());
 
-            Input input = default(Input);
-
+            Input input = default;
             Random r = new Random(100);
 
             for (int i = 0; i < 5000; i++)
@@ -45,7 +44,7 @@ namespace FASTER.test
                 for (int j = 0; j < len; j++)
                     *(val + j) = len;
 
-                fht.Upsert(ref key1, ref value, Empty.Default, 0);
+                s.Upsert(ref key1, ref value, Empty.Default, 0);
             }
 
             r = new Random(100);
@@ -55,11 +54,11 @@ namespace FASTER.test
 
                 var len = 2 + r.Next(10);
                 int[] output = null;
-                var status = fht.Read(ref key1, ref input, ref output, Empty.Default, 0);
+                var status = s.Read(ref key1, ref input, ref output, Empty.Default, 0);
 
                 if (status == Status.PENDING)
                 {
-                    fht.CompletePending(true);
+                    s.CompletePending(true);
                 }
                 else
                 {
@@ -71,28 +70,28 @@ namespace FASTER.test
                     }
                 }
             }
-            fht.StopSession();
+            s.Dispose();
             fht.Dispose();
             fht = null;
-            log.Close();
+            log.Dispose();
         }
 
         [Test]
         public unsafe void VariableLengthTest2()
         {
-            FasterKV<VLValue, VLValue, Input, int[], Empty, VLFunctions2> fht;
+            FasterKV<VLValue, VLValue> fht;
             IDevice log;
             log = Devices.CreateLogDevice(TestContext.CurrentContext.TestDirectory + "\\hlog1.log", deleteOnClose: true);
-            fht = new FasterKV<VLValue, VLValue, Input, int[], Empty, VLFunctions2>
-                (128, new VLFunctions2(),
+            fht = new FasterKV<VLValue, VLValue>
+                (128,
                 new LogSettings { LogDevice = log, MemorySizeBits = 17, PageSizeBits = 12 },
                 null, null, null, new VariableLengthStructSettings<VLValue, VLValue> { keyLength = new VLValue(), valueLength = new VLValue() }
                 );
-            fht.StartSession();
 
 
-            Input input = default(Input);
+            var s = fht.NewSession(new VLFunctions2());
 
+            Input input = default;
             Random r = new Random(100);
 
             for (int i = 0; i < 5000; i++)
@@ -110,7 +109,7 @@ namespace FASTER.test
                 for (int j = 0; j < len; j++)
                     *(val + j) = len;
 
-                fht.Upsert(ref key1, ref value, Empty.Default, 0);
+                s.Upsert(ref key1, ref value, Empty.Default, 0);
             }
 
             r = new Random(100);
@@ -126,11 +125,11 @@ namespace FASTER.test
                 var len = 2 + r.Next(10);
 
                 int[] output = null;
-                var status = fht.Read(ref key1, ref input, ref output, Empty.Default, 0);
+                var status = s.Read(ref key1, ref input, ref output, Empty.Default, 0);
 
                 if (status == Status.PENDING)
                 {
-                    fht.CompletePending(true);
+                    s.CompletePending(true);
                 }
                 else
                 {
@@ -142,10 +141,11 @@ namespace FASTER.test
                     }
                 }
             }
-            fht.StopSession();
+
+            s.Dispose();
             fht.Dispose();
             fht = null;
-            log.Close();
+            log.Dispose();
         }
         
     }

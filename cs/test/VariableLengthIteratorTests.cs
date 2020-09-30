@@ -17,12 +17,13 @@ namespace FASTER.test
         {
             var vlLength = new VLValue();
             var log = Devices.CreateLogDevice(TestContext.CurrentContext.TestDirectory + "\\hlog-vl-iter.log", deleteOnClose: true);
-            var fht = new FasterKV<Key, VLValue, Input, int[], Empty, VLFunctions>
-                (128, new VLFunctions(),
+            var fht = new FasterKV<Key, VLValue>
+                (128,
                 new LogSettings { LogDevice = log, MemorySizeBits = 17, PageSizeBits = 10 }, // 1KB page
                 null, null, null, new VariableLengthStructSettings<Key, VLValue> { valueLength = vlLength }
                 );
-            fht.StartSession();
+
+            var session = fht.NewSession(new VLFunctions());
 
             try
             {
@@ -36,7 +37,7 @@ namespace FASTER.test
 
                 Set(4, 64, 4);
 
-                fht.CompletePending(true);
+                session.CompletePending(true);
 
                 var data = new List<Tuple<long, int, int>>();
                 using (var iterator = fht.Log.Scan(fht.Log.BeginAddress, fht.Log.TailAddress))
@@ -64,17 +65,16 @@ namespace FASTER.test
             }
             finally
             {
-                fht.StopSession();
+                session.Dispose();
                 fht.Dispose();
-                fht = null;
-                log.Close();
+                log.Dispose();
             }
 
             void Set(long keyValue, int length, int tag)
             {
                 var key = new Key() { key = keyValue };
                 ref var value = ref GetValue(length, tag);
-                fht.Upsert(ref key, ref value, Empty.Default, 0);
+                session.Upsert(ref key, ref value, Empty.Default, 0);
             }
         }
 

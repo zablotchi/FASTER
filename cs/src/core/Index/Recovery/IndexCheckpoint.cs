@@ -2,21 +2,13 @@
 // Licensed under the MIT license.
 
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
-using System.Linq;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace FASTER.core
 {
-
-
-    public unsafe partial class FasterBase
+    public partial class FasterBase
     {
         // Derived class facing persistence API
         internal IndexCheckpointInfo _indexCheckpoint;
@@ -47,17 +39,27 @@ namespace FASTER.core
             num_ofb_buckets = overflowBucketsAllocator.GetMaxValidAddress();
         }
 
-        internal bool IsIndexFuzzyCheckpointCompleted(bool waitUntilComplete = false)
+        internal bool IsIndexFuzzyCheckpointCompleted()
         {
-            bool completed1 = IsMainIndexCheckpointCompleted(waitUntilComplete);
-            bool completed2 = overflowBucketsAllocator.IsCheckpointCompleted(waitUntilComplete);
+            bool completed1 = IsMainIndexCheckpointCompleted();
+            bool completed2 = overflowBucketsAllocator.IsCheckpointCompleted();
             return completed1 && completed2;
+        }
+
+        internal async ValueTask IsIndexFuzzyCheckpointCompletedAsync(CancellationToken token = default)
+        {
+            // Get tasks first to ensure we have captured the semaphore instances synchronously
+            var t1 = IsMainIndexCheckpointCompletedAsync(token);
+            var t2 = overflowBucketsAllocator.IsCheckpointCompletedAsync(token);
+            await t1;
+            await t2;
         }
 
 
         // Implementation of an asynchronous checkpointing scheme 
         // for main hash index of FASTER
-        private CountdownEvent mainIndexCheckpointEvent;
+        private int mainIndexCheckpointCallbackCount;
+        private SemaphoreSlim mainIndexCheckpointSemaphore;
 
         private void TakeMainIndexCheckpoint(int tableVersion,
                                             IDevice device,
@@ -66,68 +68,61 @@ namespace FASTER.core
             BeginMainIndexCheckpoint(tableVersion, device, out numBytes);
         }
 
-        private void BeginMainIndexCheckpoint(
+        private unsafe void BeginMainIndexCheckpoint(
                                            int version,
                                            IDevice device,
                                            out ulong numBytesWritten)
         {
-            int numChunks = 1;
             long totalSize = state[version].size * sizeof(HashBucket);
-            Debug.Assert(totalSize < (long)uint.MaxValue); // required since numChunks = 1
+
+            int numChunks = 1;
+            if (totalSize > uint.MaxValue)
+            {
+                numChunks = (int)Math.Ceiling((double)totalSize / (long)uint.MaxValue);
+                numChunks = (int)Math.Pow(2, Math.Ceiling(Math.Log(numChunks, 2)));
+            }
 
             uint chunkSize = (uint)(totalSize / numChunks);
-            mainIndexCheckpointEvent = new CountdownEvent(numChunks);
+            mainIndexCheckpointCallbackCount = numChunks;
+            mainIndexCheckpointSemaphore = new SemaphoreSlim(0);
             HashBucket* start = state[version].tableAligned;
             
             numBytesWritten = 0;
             for (int index = 0; index < numChunks; index++)
             {
                 long chunkStartBucket = (long)start + (index * chunkSize);
-                HashIndexPageAsyncFlushResult result = default(HashIndexPageAsyncFlushResult);
+                HashIndexPageAsyncFlushResult result = default;
                 result.chunkIndex = index;
                 device.WriteAsync((IntPtr)chunkStartBucket, numBytesWritten, chunkSize, AsyncPageFlushCallback, result);
                 numBytesWritten += chunkSize;
             }
         }
 
-
-        private bool IsMainIndexCheckpointCompleted(bool waitUntilComplete = false)
+        private bool IsMainIndexCheckpointCompleted()
         {
-            bool completed = mainIndexCheckpointEvent.IsSet;
-            if (!completed && waitUntilComplete)
-            {
-                mainIndexCheckpointEvent.Wait();
-                return true;
-            }
-            return completed;
+            return mainIndexCheckpointCallbackCount == 0;
         }
 
-        private void AsyncPageFlushCallback(
-                                            uint errorCode,
-                                            uint numBytes,
-                                            NativeOverlapped* overlap)
+        private async ValueTask IsMainIndexCheckpointCompletedAsync(CancellationToken token = default)
         {
-            //Set the page status to flushed
-            var result = (HashIndexPageAsyncFlushResult)Overlapped.Unpack(overlap).AsyncResult;
-
-            try
-            {
-                if (errorCode != 0)
-                {
-                    Trace.TraceError("OverlappedStream GetQueuedCompletionStatus error: {0}", errorCode);
-                }
-            }
-            catch (Exception ex)
-            {
-                Trace.TraceError("Completion Callback error, {0}", ex.Message);
-            }
-            finally
-            {
-                mainIndexCheckpointEvent.Signal();
-                Overlapped.Free(overlap);
-            }
+            var s = mainIndexCheckpointSemaphore;
+            await s.WaitAsync(token);
+            s.Release();
         }
 
+        private unsafe void AsyncPageFlushCallback(uint errorCode, uint numBytes, object context)
+        {
+            // Set the page status to flushed
+            _ = (HashIndexPageAsyncFlushResult)context;
+
+            if (errorCode != 0)
+            {
+                Trace.TraceError("AsyncPageFlushCallback error: {0}", errorCode);
+            }
+            if (Interlocked.Decrement(ref mainIndexCheckpointCallbackCount) == 0)
+            {
+                mainIndexCheckpointSemaphore.Release();
+            }
+        }
     }
-
 }

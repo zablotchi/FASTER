@@ -1,9 +1,8 @@
 ﻿// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
-using System.Threading;
 using System.Runtime.InteropServices;
-using System;
+using System.Threading;
 
 namespace FASTER.core
 {
@@ -78,7 +77,7 @@ namespace FASTER.core
                     return false;
 
                 if (newer.owner == 0)
-                    throw new Exception("Invalid release by non-owner thread");
+                    throw new FasterException("Invalid release by non-owner thread");
                 newer.owner = 0;
 
                 if (Interlocked.CompareExchange(ref this.atomic, newer.atomic, older.atomic) == older.atomic)

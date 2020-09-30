@@ -32,8 +32,9 @@ namespace FASTER.test.recovery.objectstore
 
     public class AdIdSerializer : BinaryObjectSerializer<AdId>
     {
-        public override void Deserialize(ref AdId obj)
+        public override void Deserialize(out AdId obj)
         {
+            obj = new AdId();
             obj.adId = reader.ReadInt64();
         }
 
@@ -57,8 +58,9 @@ namespace FASTER.test.recovery.objectstore
 
     public class NumClicksSerializer : BinaryObjectSerializer<NumClicks>
     {
-        public override void Deserialize(ref NumClicks obj)
+        public override void Deserialize(out NumClicks obj)
         {
+            obj = new NumClicks();
             obj.numClicks = reader.ReadInt64();
         }
 
@@ -92,9 +94,9 @@ namespace FASTER.test.recovery.objectstore
         {
         }
 
-        public void CheckpointCompletionCallback(Guid sessionId, long serialNum)
+        public void CheckpointCompletionCallback(string sessionId, CommitPoint commitPoint)
         {
-            Console.WriteLine("Session {0} reports persistence until {1}", sessionId, serialNum);
+            Console.WriteLine("Session {0} reports persistence until {1}", sessionId, commitPoint.UntilSerialNo);
         }
 
         // Read functions
