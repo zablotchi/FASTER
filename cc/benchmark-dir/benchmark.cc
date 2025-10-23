@@ -19,6 +19,10 @@
 using namespace std::chrono_literals;
 using namespace FASTER::core;
 
+// Thread-local RNG for filling key/value padding with random data
+thread_local std::mt19937 padding_rng(std::random_device{}());
+thread_local std::uniform_int_distribution<uint8_t> byte_dist(0, 255);
+
 /// Basic YCSB benchmark.
 
 enum class Op : uint8_t {
@@ -69,9 +73,11 @@ class RmwContext;
 class Key {
  public:
   Key(uint64_t key) {
-    // Store the 64-bit key in first 8 bytes, pad rest with zeros
-    std::memset(key_, 0, 32);
+    // Store the 64-bit key in first 8 bytes, fill remaining 24 bytes with random data
     std::memcpy(key_, &key, sizeof(uint64_t));
+    for(size_t i = 8; i < 32; ++i) {
+      key_[i] = byte_dist(padding_rng);
+    }
   }
 
   /// Methods and operators required by the (implicit) interface:
@@ -109,8 +115,11 @@ class Value {
   }
 
   Value(uint64_t value) {
-    std::memset(value_, 0, 512);
+    // Store the 64-bit value in first 8 bytes, fill remaining 504 bytes with random data
     std::memcpy(value_, &value, sizeof(uint64_t));
+    for(size_t i = 8; i < 512; ++i) {
+      value_[i] = byte_dist(padding_rng);
+    }
   }
 
   inline static constexpr uint32_t size() {
@@ -186,12 +195,15 @@ class UpsertContext : public IAsyncContext {
 
   /// Non-atomic and atomic Put() methods.
   inline void Put(value_t& value) {
-    std::memset(value.value_, 0, 512);
+    // Store input in first 8 bytes, fill remaining 504 bytes with random data
     std::memcpy(value.value_, &input_, sizeof(uint64_t));
+    for(size_t i = 8; i < 512; ++i) {
+      value.value_[i] = byte_dist(padding_rng);
+    }
   }
   inline bool PutAtomic(value_t& value) {
     // For 512-byte values, we just write to first 8 bytes atomically
-    std::memset(value.value_, 0, 512);
+    // Note: remaining bytes stay as-is to avoid non-atomic write
     std::memcpy(value.value_, &input_, sizeof(uint64_t));
     return true;
   }
@@ -237,14 +249,18 @@ class RmwContext : public IAsyncContext {
 
   /// Initial, non-atomic, and atomic RMW methods.
   inline void RmwInitial(value_t& value) {
-    std::memset(value.value_, 0, 512);
+    // Initialize with incr value in first 8 bytes, random data in remaining bytes
     std::memcpy(value.value_, &incr_, sizeof(uint64_t));
+    for(size_t i = 8; i < 512; ++i) {
+      value.value_[i] = byte_dist(padding_rng);
+    }
   }
   inline void RmwCopy(const value_t& old_value, value_t& value) {
     uint64_t old_val;
     std::memcpy(&old_val, old_value.value_, sizeof(uint64_t));
     uint64_t new_val = old_val + incr_;
-    std::memset(value.value_, 0, 512);
+    // Copy entire old value to preserve random padding, then update first 8 bytes
+    std::memcpy(value.value_, old_value.value_, 512);
     std::memcpy(value.value_, &new_val, sizeof(uint64_t));
   }
   inline bool RmwAtomic(value_t& value) {
