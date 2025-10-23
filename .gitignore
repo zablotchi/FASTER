@@ -193,3 +193,5 @@ packages/
 *.lib
 nativebin/
 /cs/benchmark/Properties/launchSettings.json
+
+CLAUDE.md
