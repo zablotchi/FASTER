@@ -31,10 +31,12 @@ enum class Op : uint8_t {
 enum class Workload {
   A_50_50 = 0,
   RMW_100 = 1,
+  READ_100 = 2,
+  WRITE_100 = 3,
 };
 
-static constexpr uint64_t kInitCount = 250000000;
-static constexpr uint64_t kTxnCount = 1000000000;
+static constexpr uint64_t kInitCount = 10000000;
+static constexpr uint64_t kTxnCount = 50000000;
 static constexpr uint64_t kChunkSize = 3200;
 static constexpr uint64_t kRefreshInterval = 64;
 static constexpr uint64_t kCompletePendingInterval = 1600;
@@ -268,6 +270,14 @@ inline Op ycsb_a_50_50(std::mt19937& rng) {
 
 inline Op ycsb_rmw_100(std::mt19937& rng) {
   return Op::ReadModifyWrite;
+}
+
+inline Op ycsb_read_100(std::mt19937& rng) {
+  return Op::Read;
+}
+
+inline Op ycsb_write_100(std::mt19937& rng) {
+  return Op::Upsert;
 }
 
 /// Affinitize to hardware threads on the same core first, before
@@ -585,16 +595,21 @@ void run_benchmark(store_t* store, size_t num_threads) {
     thread.join();
   }
 
-  printf("Finished benchmark: %" PRIu64 " thread checkpoints completed;  %.2f ops/second/thread\n",
-         num_checkpoints.load(),
-         ((double)total_reads_done_ + (double)total_writes_done_) / ((double)total_duration_ /
-             kNanosPerSecond));
+  uint64_t total_ops = total_reads_done_ + total_writes_done_;
+  double total_throughput = (double)total_ops / kRunSeconds;
+  double per_thread_throughput = total_throughput / num_threads;
+
+  printf("Finished benchmark: %" PRIu64 " checkpoints completed\n", num_checkpoints.load());
+  printf("Total operations: %" PRIu64 " (%" PRIu64 " reads, %" PRIu64 " writes)\n",
+         total_ops, total_reads_done_.load(), total_writes_done_.load());
+  printf("Total throughput: %.2f ops/sec\n", total_throughput);
+  printf("Per-thread throughput: %.2f ops/sec\n", per_thread_throughput);
 }
 
 void run(Workload workload, size_t num_threads) {
   // FASTER store has a hash table with approx. kInitCount / 2 entries and a log of size 16 GB
   size_t init_size = next_power_of_two(kInitCount / 2);
-  store_t store{ init_size, 17179869184, "storage" };
+  store_t store{ init_size, 17179869184, "/opt/tidehunter/faster-data", 0.9, true };
 
   printf("Populating the store...\n");
 
@@ -609,6 +624,12 @@ void run(Workload workload, size_t num_threads) {
     break;
   case Workload::RMW_100:
     run_benchmark<ycsb_rmw_100>(&store, num_threads);
+    break;
+  case Workload::READ_100:
+    run_benchmark<ycsb_read_100>(&store, num_threads);
+    break;
+  case Workload::WRITE_100:
+    run_benchmark<ycsb_write_100>(&store, num_threads);
     break;
   default:
     printf("Unknown workload!\n");
