@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 #include <string>
 
@@ -35,8 +36,8 @@ enum class Workload {
   WRITE_100 = 3,
 };
 
-static constexpr uint64_t kInitCount = 10000000;
-static constexpr uint64_t kTxnCount = 50000000;
+static constexpr uint64_t kInitCount = 250000000;
+static constexpr uint64_t kTxnCount = 1000000000;
 static constexpr uint64_t kChunkSize = 3200;
 static constexpr uint64_t kRefreshInterval = 64;
 static constexpr uint64_t kCompletePendingInterval = 1600;
@@ -50,7 +51,7 @@ static constexpr uint64_t kNanosPerSecond = 1000000000;
 
 static constexpr uint64_t kMaxKey = 268435456;
 static constexpr uint64_t kRunSeconds = 30;
-static constexpr uint64_t kCheckpointSeconds = 0;
+static constexpr uint64_t kCheckpointSeconds = 1;
 
 aligned_unique_ptr_t<uint64_t> init_keys_;
 aligned_unique_ptr_t<uint64_t> txn_keys_;
@@ -64,50 +65,56 @@ class ReadContext;
 class UpsertContext;
 class RmwContext;
 
-/// This benchmark stores 8-byte keys in key-value store.
+/// This benchmark stores 32-byte keys in key-value store.
 class Key {
  public:
-  Key(uint64_t key)
-    : key_{ key } {
+  Key(uint64_t key) {
+    // Store the 64-bit key in first 8 bytes, pad rest with zeros
+    std::memset(key_, 0, 32);
+    std::memcpy(key_, &key, sizeof(uint64_t));
   }
 
   /// Methods and operators required by the (implicit) interface:
   inline static constexpr uint32_t size() {
-    return static_cast<uint32_t>(sizeof(Key));
+    return 32;
   }
   inline KeyHash GetHash() const {
-    return KeyHash{ Utility::GetHashCode(key_) };
+    // Hash the first 8 bytes (the actual key value)
+    uint64_t key_val;
+    std::memcpy(&key_val, key_, sizeof(uint64_t));
+    return KeyHash{ Utility::GetHashCode(key_val) };
   }
 
   /// Comparison operators.
   inline bool operator==(const Key& other) const {
-    return key_ == other.key_;
+    return std::memcmp(key_, other.key_, 32) == 0;
   }
   inline bool operator!=(const Key& other) const {
-    return key_ != other.key_;
+    return std::memcmp(key_, other.key_, 32) != 0;
   }
 
  private:
-  uint64_t key_;
+  uint8_t key_[32];
 };
 
-/// This benchmark stores an 8-byte value in the key-value store.
+/// This benchmark stores a 512-byte value in the key-value store.
 class Value {
  public:
-  Value()
-    : value_{ 0 } {
+  Value() {
+    std::memset(value_, 0, 512);
   }
 
-  Value(const Value& other)
-    : value_{ other.value_ } {
+  Value(const Value& other) {
+    std::memcpy(value_, other.value_, 512);
   }
 
-  Value(uint64_t value)
-    : value_{ value } {
+  Value(uint64_t value) {
+    std::memset(value_, 0, 512);
+    std::memcpy(value_, &value, sizeof(uint64_t));
   }
 
   inline static constexpr uint32_t size() {
-    return static_cast<uint32_t>(sizeof(Value));
+    return 512;
   }
 
   friend class ReadContext;
@@ -115,10 +122,7 @@ class Value {
   friend class RmwContext;
 
  private:
-  union {
-    uint64_t value_;
-    std::atomic<uint64_t> atomic_value_;
-  };
+  uint8_t value_[512];
 };
 
 /// Class passed to store_t::Read().
@@ -182,10 +186,13 @@ class UpsertContext : public IAsyncContext {
 
   /// Non-atomic and atomic Put() methods.
   inline void Put(value_t& value) {
-    value.value_ = input_;
+    std::memset(value.value_, 0, 512);
+    std::memcpy(value.value_, &input_, sizeof(uint64_t));
   }
   inline bool PutAtomic(value_t& value) {
-    value.atomic_value_.store(input_);
+    // For 512-byte values, we just write to first 8 bytes atomically
+    std::memset(value.value_, 0, 512);
+    std::memcpy(value.value_, &input_, sizeof(uint64_t));
     return true;
   }
 
@@ -230,13 +237,20 @@ class RmwContext : public IAsyncContext {
 
   /// Initial, non-atomic, and atomic RMW methods.
   inline void RmwInitial(value_t& value) {
-    value.value_ = incr_;
+    std::memset(value.value_, 0, 512);
+    std::memcpy(value.value_, &incr_, sizeof(uint64_t));
   }
   inline void RmwCopy(const value_t& old_value, value_t& value) {
-    value.value_ = old_value.value_ + incr_;
+    uint64_t old_val;
+    std::memcpy(&old_val, old_value.value_, sizeof(uint64_t));
+    uint64_t new_val = old_val + incr_;
+    std::memset(value.value_, 0, 512);
+    std::memcpy(value.value_, &new_val, sizeof(uint64_t));
   }
   inline bool RmwAtomic(value_t& value) {
-    value.atomic_value_.fetch_add(incr_);
+    // For simplicity, treat first 8 bytes as atomic uint64_t
+    uint64_t* val_ptr = reinterpret_cast<uint64_t*>(value.value_);
+    __atomic_fetch_add(val_ptr, incr_, __ATOMIC_SEQ_CST);
     return true;
   }
 
@@ -553,6 +567,7 @@ void run_benchmark(store_t* store, size_t num_threads) {
 
   static std::atomic<uint64_t> num_checkpoints;
   num_checkpoints = 0;
+  uint64_t checkpoint_num = 0;
 
   if(kCheckpointSeconds == 0) {
     std::this_thread::sleep_for(std::chrono::seconds(kRunSeconds));
@@ -569,8 +584,6 @@ void run_benchmark(store_t* store, size_t num_threads) {
     auto start_time = std::chrono::high_resolution_clock::now();
     auto last_checkpoint_time = start_time;
     auto current_time = start_time;
-
-    uint64_t checkpoint_num = 0;
 
     while(current_time - start_time < std::chrono::seconds(kRunSeconds)) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -599,7 +612,7 @@ void run_benchmark(store_t* store, size_t num_threads) {
   double total_throughput = (double)total_ops / kRunSeconds;
   double per_thread_throughput = total_throughput / num_threads;
 
-  printf("Finished benchmark: %" PRIu64 " checkpoints completed\n", num_checkpoints.load());
+  printf("Finished benchmark: %" PRIu64 " checkpoints completed (%" PRIu64 " callback invocations)\n", checkpoint_num, num_checkpoints.load());
   printf("Total operations: %" PRIu64 " (%" PRIu64 " reads, %" PRIu64 " writes)\n",
          total_ops, total_reads_done_.load(), total_writes_done_.load());
   printf("Total throughput: %.2f ops/sec\n", total_throughput);
@@ -607,9 +620,11 @@ void run_benchmark(store_t* store, size_t num_threads) {
 }
 
 void run(Workload workload, size_t num_threads) {
-  // FASTER store has a hash table with approx. kInitCount / 2 entries and a log of size 16 GB
+  // FASTER store has a hash table with approx. kInitCount / 2 entries and a log of size 128 GB
+  // log_size = 128 GB caps memory usage (pages are reused circularly, unlimited total data capacity)
+  // pre_allocate_log = false allocates pages on-demand instead of all upfront
   size_t init_size = next_power_of_two(kInitCount / 2);
-  store_t store{ init_size, 17179869184, "/opt/tidehunter/faster-data", 0.9, true };
+  store_t store{ init_size, 137438953472, "/opt/tidehunter/faster-data", 0.9, false };
 
   printf("Populating the store...\n");
 
