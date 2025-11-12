@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <cstdint>
 
 int main(int argc, char* argv[]) {
   if (argc != 3) {
